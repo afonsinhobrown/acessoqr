@@ -6,6 +6,7 @@ const Q = require('./qr');
 const A = require('./auth');
 const O = require('./organizador');
 const E = require('./eventos');
+const R = require('./relatorios');
 const D = require('./dispositivos');
 const { enviar } = require('./mailer');
 const { traduzirErro, httpErr } = require('./errors');
@@ -239,6 +240,29 @@ app.patch('/organizadores/vendedores/:id', O.autenticarOrganizador, rota((req) =
   tx((c) => E.actualizarVendedor(c, {
     organizadorId: req.organizador.id, vendedorId: req.params.id, dados: req.body,
   }))
+));
+
+// ---------- Relatórios e conciliação ----------
+
+app.get('/organizadores/eventos/:id/relatorios/resumo', O.autenticarOrganizador, rota((req) =>
+  tx((c) => R.resumo(c, { organizadorId: req.organizador.id, eventoId: req.params.id }))
+));
+
+app.get('/organizadores/eventos/:id/relatorios/vendas', O.autenticarOrganizador, rota((req) =>
+  tx((c) => R.vendas(c, {
+    organizadorId: req.organizador.id,
+    eventoId: req.params.id,
+    desde: req.query.desde,
+    ate: req.query.ate,
+  }))
+));
+
+app.get('/organizadores/eventos/:id/relatorios/recargas', O.autenticarOrganizador, rota((req) =>
+  tx((c) => R.recargas(c, { organizadorId: req.organizador.id, eventoId: req.params.id }))
+));
+
+app.get('/organizadores/eventos/:id/relatorios/conciliacao', O.autenticarOrganizador, rota((req) =>
+  tx((c) => R.conciliacao(c, { organizadorId: req.organizador.id, eventoId: req.params.id }))
 ));
 
 // ---------- Compra de bilhete ---------- cria pedido pendente. O pagamento é iniciado no prestador

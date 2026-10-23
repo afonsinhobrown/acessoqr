@@ -11,6 +11,7 @@ compra de bilhete, recarga, vendas nos pontos, admissão na porta e estornos.
 - `src/organizador.js` – palavra-passe (scrypt), TOTP, sessões e middleware do organizador.
 - `src/dispositivos.js` – emparelhamento de dispositivos e autenticação de vendedor/porta.
 - `src/eventos.js` – eventos, tipos de bilhete, pontos de venda e vendedores.
+- `src/relatorios.js` – vendas, recargas, resumo e conciliação do evento.
 - `src/auditoria.js` – registo em `audit_log` das acções administrativas.
 - `src/password.js` – hash de palavra-passe com scrypt.
 - `src/totp.js` – segundo factor TOTP (RFC 6238) e URI `otpauth`.
@@ -26,6 +27,7 @@ compra de bilhete, recarga, vendas nos pontos, admissão na porta e estornos.
 - `test/auth.test.js` – testes de OTP, magic link, limites e sessões.
 - `test/organizador.test.js` – testes de login 2FA, sessões e emparelhamento de dispositivos.
 - `test/eventos.test.js` – eventos, estados, catálogo, auditoria, limites e saldo máximo.
+- `test/relatorios.test.js` – resumo, vendas agrupadas e conciliação.
 - `test/totp.test.js` / `test/password.test.js` – testes unitários de TOTP e scrypt.
 - `migrations/001_autenticacao_comprador.sql` – migração de `auth_challenges` e `sessions`.
 - `migrations/002_organizador_dispositivos.sql` – migração de organizadores, sessões e dispositivos.
@@ -84,6 +86,10 @@ autenticadora.
 | POST/GET | /organizadores/eventos/:id/pontos-venda | organizador (Bearer) | pontos de venda |
 | POST/GET | /organizadores/eventos/:id/vendedores | organizador (Bearer) | vendedores |
 | PATCH | /organizadores/vendedores/:id | organizador (Bearer) | actualiza vendedor |
+| GET | /organizadores/eventos/:id/relatorios/resumo | organizador (Bearer) | carteiras, movimentos, recargas e pedidos |
+| GET | /organizadores/eventos/:id/relatorios/vendas | organizador (Bearer) | vendas por hora/ponto/vendedor (`desde`,`ate`) |
+| GET | /organizadores/eventos/:id/relatorios/recargas | organizador (Bearer) | recargas por método e estado |
+| GET | /organizadores/eventos/:id/relatorios/conciliacao | organizador (Bearer) | saldo das carteiras vs soma dos movimentos |
 | POST | /eventos/:id/pedidos | comprador | cria pedido pendente |
 | POST | /webhooks/pagamento | prestador | confirma pedido ou recarga (assinatura HMAC) |
 | GET | /pedidos/:id | comprador | estado do pedido |
@@ -123,17 +129,18 @@ autenticadora.
 - O saldo máximo é imposto em `aplicar_movimento`, na base de dados, e o limite de
   vendas por tipo de bilhete é verificado ao criar o pedido.
 - Todas as acções do organizador (evento, catálogo, dispositivos) ficam em `audit_log`.
+- A conciliação compara a soma de `transactions.valor` com a soma de `wallets.saldo`
+  do evento; qualquer diferença é um erro de integridade e aparece em `diferenca`.
 
 ## Por fazer (próximas fases)
-1. **Relatórios e conciliação**: vendas por ponto/vendedor, recargas por método,
-   fecho de caixa e exportação CSV/XLSX.
+1. **Fecho de caixa e pagamentos presenciais**: compra e recarga em dinheiro
+   confirmadas pelo organizador, contagem de caixa e exportação CSV/XLSX.
 2. **Integração de pagamentos** (M-Pesa, e-Mola, mKesh, cartão): iniciar pagamento e
    adaptar a assinatura do webhook a cada prestador. Precisa de credenciais de sandbox.
 3. **Reembolsos** com política escrita e OTP em acções sensíveis.
-4. **Pagamentos presenciais** (dinheiro no ponto de venda) pelo painel autenticado do organizador.
-5. **Frontend**: página de compra, área do cliente, PWA do vendedor e leitor de porta.
-6. Limites de risco do modo offline e sincronização das vendas em fila.
-7. Testes de carga e rate limiting nas rotas públicas (incluindo login do organizador).
+4. **Frontend**: página de compra, área do cliente, PWA do vendedor e leitor de porta.
+5. Limites de risco do modo offline e sincronização das vendas em fila.
+6. Testes de carga e rate limiting nas rotas públicas (incluindo login do organizador).
 
 ## Aviso
 Não está pronto para produção. Falta o fluxo de vendas offline assinadas, os limites
