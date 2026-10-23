@@ -3,6 +3,7 @@
 // nunca fiquem dessincronizados.
 const { httpErr } = require('./errors');
 const { normalizarEmail, normalizarTelefone } = require('./contacto');
+const C = require('./config');
 
 async function aplicarMovimento(c, m) {
   try {
@@ -139,7 +140,7 @@ async function venda(c, { walletId, valor, sellerId, deviceId, clientTxId }) {
   if (!Number.isInteger(valor) || valor <= 0) throw httpErr(400, 'valor_deve_ser_positivo');
   if (clientTxId && !deviceId) throw httpErr(400, 'venda_offline_requer_dispositivo');
   const w = (await c.query(
-    `SELECT w.estado, e.estado AS evento_estado
+    `SELECT w.estado, e.estado AS evento_estado, e.organizer_id, e.config
        FROM wallets w JOIN events e ON e.id = w.event_id
       WHERE w.id=$1`,
     [walletId]
@@ -148,6 +149,22 @@ async function venda(c, { walletId, valor, sellerId, deviceId, clientTxId }) {
   if (w.estado !== 'ativa') throw httpErr(409, 'carteira_inactiva');
   if (w.evento_estado !== 'publicado' && w.evento_estado !== 'em_curso')
     throw httpErr(409, 'evento_encerrado');
+
+  // Modo offline: aplica os limites de risco configurados no evento/organizador.
+  if (clientTxId) {
+    const cfg = C.aplicarEvento(await C.valores(c, w.organizer_id), w.config);
+    if (valor > Number(cfg.offline_venda_max))
+      throw httpErr(409, 'limite_offline_por_venda');
+    const { rows } = await c.query(
+      `SELECT COALESCE(sum(-valor),0)::bigint AS total
+         FROM transactions
+        WHERE device_id=$1 AND origem='offline'
+          AND criado_em > now() - make_interval(hours => $2)`,
+      [deviceId, Number(cfg.offline_duracao_horas)]
+    );
+    if (Number(rows[0].total) + valor > Number(cfg.offline_dispositivo_max))
+      throw httpErr(409, 'limite_offline_dispositivo');
+  }
 
   const id = await aplicarMovimento(c, {
     wallet: walletId,
@@ -211,8 +228,23 @@ async function saldo(c, walletId) {
   return rows[0];
 }
 
+// Venda offline rejeitada na sincronização: fica registada para resolução
+// manual pelo organizador, sem alterar o saldo (RF-44).
+async function registarRejeicao(c, { deviceId, clientTxId, walletId, valor, motivo }) {
+  const { rows } = await c.query(
+    `INSERT INTO sync_rejections (device_id, client_tx_id, wallet_id, valor, motivo)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT DO NOTHING
+     RETURNING id`,
+    [deviceId, clientTxId, walletId || null, Number(valor) || 0, String(motivo || 'desconhecido')]
+  );
+  return rows[0] || null;
+}
+
 module.exports = {
+  aplicarMovimento,
   criarPedido, confirmarPedido,
   criarRecarga, confirmarRecarga,
   venda, estornar, admitir, saldo,
+  registarRejeicao,
 };

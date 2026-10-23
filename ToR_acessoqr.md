@@ -377,20 +377,41 @@ Cada fase tem critérios de aceitação. Só se avança quando os critérios da 
 | Vendedor a vender sem registo | Média | Médio | Limites offline, auditoria e relatórios por dispositivo. |
 | Fraude por contas de teste em produção | Baixa | Médio | Separação estrita de ambientes e dados sintéticos. |
 
-## 18. Decisões em aberto
+## 18. Decisões assumidas por omissão
 
-Estas decisões bloqueiam partes específicas. Devem ser tomadas pelo product owner.
+Os valores abaixo são os que o sistema aplica enquanto o product owner não decidir
+outra coisa. Ficam configuráveis por organizador no painel (`/organizadores/configuracoes`)
+e algumas chaves podem ser sobrepostas por evento (`/organizadores/eventos/:id/configuracoes`).
+Valores monetários em centavos; 100 centavos = 1 MZN.
 
-1. **Limites de risco offline** (secção 8): confirmar ou ajustar os valores propostos.
-2. **Saldo máximo por carteira** (RN-07).
-3. **Prazo de retenção de dados pessoais** (secção 9).
-4. **Política de reembolsos:** prazo para pedir, taxa, se há reembolso parcial, e o que acontece com saldo de eventos cancelados.
-5. **Modelo de receita:** comissão sobre recarga, comissão sobre vendas, taxa fixa ao organizador, ou combinação. Afecta a conciliação e a facturação.
-6. **Quem é o titular do saldo não usado** e se pode transitar para o próximo evento.
-7. **Prestador de pagamentos:** directo ao M-Pesa e e-Mola, ou através de agregador.
-8. **Modelo de licenciamento:** decidir com o jurídico antes da fase 2.
-9. **PIN para valores altos:** valor a partir do qual é exigido (sugestão: 1.000 MZN).
-10. **Canal de OTP:** SMS, WhatsApp ou email por defeito, e custo por mensagem.
+| # | Decisão | Valor por omissão | Configurável |
+|---|---|---|---|
+| 1 | Limite de uma venda offline | 2.000,00 MZN (`offline_venda_max`) | organizador + evento |
+| 1 | Limite acumulado offline por dispositivo | 20.000,00 MZN (`offline_dispositivo_max`) | organizador + evento |
+| 1 | Janela offline antes de exigir sincronização | 4 horas (`offline_duracao_horas`) | organizador + evento |
+| 2 | Saldo máximo por carteira | 50.000,00 MZN (`saldo_maximo_padrao`) | organizador; o evento pode fixar outro |
+| 3 | Retenção de dados pessoais | 12 meses após o fim (`retencao_dados_meses`) | organizador |
+| 4 | Prazo para pedir reembolso | 30 dias após o fim (`reembolso_prazo_dias`) | organizador + evento |
+| 4 | Taxa de reembolso | 0% (`reembolso_taxa_pct`) | organizador + evento |
+| 4 | Reembolso parcial | permitido (`reembolso_parcial`) | organizador + evento |
+| 4 | Reembolsos antes do fim | não permitidos (`reembolsos_antes_fim`) | organizador + evento |
+| 4 | Valor mínimo de reembolso | 100,00 MZN (`reembolso_minimo`) | organizador + evento |
+| 5 | Comissão sobre recarga | 0% (`modelo_receita.comissao_recarga_pct`) | organizador |
+| 5 | Comissão sobre venda | 0% (`modelo_receita.comissao_venda_pct`) | organizador |
+| 5 | Taxa fixa ao organizador | 0 (`modelo_receita.taxa_fixa_organizador`) | organizador |
+| 6 | Saldo não usado | devolvido ao comprador (`saldo_nao_usado=reembolso`) | organizador + evento |
+| 7 | Prestador de pagamentos | PaySuite, como agregador (`prestador_pagamentos`) | organizador |
+| 8 | Licenciamento | prestador licenciado (`licenciamento`) | organizador |
+| 9 | PIN a partir de | 1.000,00 MZN (`pin_limite`) | organizador + evento |
+| 10 | Canal de OTP | email (`otp_canal`) | organizador |
+
+Notas:
+- Em eventos cancelados, o saldo é sempre devolvido, independentemente de
+  `saldo_nao_usado`.
+- Se `saldo_nao_usado` for `transita` ou `organizador`, novos pedidos de reembolso
+  são recusados com `reembolso_indisponivel`.
+- A comissão da plataforma é apenas configurada e exposta nos relatórios; ainda não
+  é debitada automaticamente no ledger.
 
 ## 19. Critérios de aceitação gerais
 

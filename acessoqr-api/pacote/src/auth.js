@@ -128,7 +128,9 @@ function iguais(a, b) {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
-async function verificarOtp(c, { email, codigo, dispositivo }) {
+// Valida e consome um OTP sem abrir sessão. Usado nas acções sensíveis
+// (reembolso, mudança de contacto) que exigem novo código mesmo com sessão.
+async function validarOtp(c, { email, codigo }) {
   const e = emailObrigatorio(email);
   if (typeof codigo !== 'string' || !/^\d{6}$/.test(codigo))
     throw httpErr(400, 'codigo_invalido');
@@ -147,7 +149,17 @@ async function verificarOtp(c, { email, codigo, dispositivo }) {
     throw httpErr(400, 'codigo_invalido');
   }
   await c.query('UPDATE auth_challenges SET usado_em = now() WHERE id=$1', [ch.id]);
+  return e;
+}
+
+async function verificarOtp(c, { email, codigo, dispositivo }) {
+  const e = await validarOtp(c, { email, codigo });
   return autenticarConta(c, e, dispositivo);
+}
+
+async function consumirCodigoSensivel(c, { email, codigo }) {
+  await validarOtp(c, { email, codigo });
+  return true;
 }
 
 async function verificarMagicLink(c, { email, token, dispositivo }) {
@@ -233,7 +245,9 @@ function autenticar(req, res, next) {
 
 module.exports = {
   criarDesafio,
+  validarOtp,
   verificarOtp,
+  consumirCodigoSensivel,
   verificarMagicLink,
   renovar,
   revogar,

@@ -8,6 +8,10 @@ const O = require('./organizador');
 const E = require('./eventos');
 const R = require('./relatorios');
 const D = require('./dispositivos');
+const C = require('./config');
+const P = require('./paysuite');
+const PAG = require('./pagamentos');
+const RE = require('./reembolsos');
 const { enviar } = require('./mailer');
 const { traduzirErro, httpErr } = require('./errors');
 
@@ -38,6 +42,49 @@ app.post('/webhooks/pagamento', express.raw({ type: '*/*' }), async (req, res) =
     res.json({ ok: true, estado: r.estado });
   } catch (e) {
     erro(res, e);
+  }
+});
+
+// Webhook real da PaySuite. Também tem de vir antes de express.json().
+app.post('/webhooks/paysuite', express.raw({ type: '*/*' }), async (req, res) => {
+  const raw = req.body.toString('utf8');
+  if (!P.verificarAssinaturaWebhook(raw, req.get('x-signature'))) {
+    return res.status(401).json({ erro: 'assinatura_invalida' });
+  }
+
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return res.status(400).json({ erro: 'json_invalido' });
+  }
+
+  const evento = String(body.event || '');
+  const data = body.data || {};
+  const referencia = data.reference;
+  const status = String(data.status || '').toLowerCase();
+  const pagos = new Set(['paid', 'pago', 'succeeded', 'success', 'completed', 'confirmed']);
+  const falhados = new Set(['failed', 'falhou', 'cancelled', 'canceled', 'expired', 'declined', 'rejected']);
+
+  try {
+    if (evento.startsWith('payout.')) {
+      const sucesso = evento === 'payout.success' ||
+        (!evento.includes('failed') && (pagos.has(status) || status === 'completed'));
+      const r = await tx((c) => RE.processarPayout(c, { referencia, sucesso }));
+      return res.json({ ok: true, reembolso: r?.id || null });
+    }
+
+    const pago = evento.includes('success') || evento.includes('paid') || pagos.has(status);
+    const falhou = evento.includes('failed') || evento.includes('cancelled') || falhados.has(status);
+    if (!pago && !falhou) return res.json({ ok: true, ignorado: true });
+
+    const r = await tx((c) =>
+      pago ? PAG.confirmarPorReferencia(c, referencia) : PAG.registarFalha(c, referencia)
+    );
+    return res.json({ ok: true, ...(r || { ignorado: true }) });
+  } catch (e) {
+    console.error('paysuite webhook:', e);
+    return res.status(500).json({ erro: 'interno' });
   }
 });
 
@@ -137,6 +184,45 @@ app.post('/organizador/auth/logout', rota((req) =>
 
 app.get('/organizador/eu', O.autenticarOrganizador, rota((req) =>
   tx((c) => O.eu(c, req.organizador.id))
+));
+
+// ---------- Configurações do organizador ----------
+// Os valores por omissão estão em src/config.js. O painel do organizador pode
+// alterá-los aqui, e cada evento pode sobrepor os que fazem sentido por evento.
+
+app.get('/organizadores/configuracoes', O.autenticarOrganizador, rota((req) =>
+  tx(async (c) => ({
+    definicoes: C.definicoes(),
+    valores: await C.valores(c, req.organizador.id),
+  }))
+));
+
+app.patch('/organizadores/configuracoes', O.autenticarOrganizador, rota((req) =>
+  tx((c) => C.actualizar(c, {
+    organizadorId: req.organizador.id,
+    valores: req.body.valores || req.body,
+  }))
+));
+
+app.get('/organizadores/eventos/:id/configuracoes', O.autenticarOrganizador, rota((req) =>
+  tx(async (c) => {
+    const ev = await E.eventoDoOrganizador(c, req.organizador.id, req.params.id);
+    const base = await C.valores(c, req.organizador.id);
+    return { valores: C.aplicarEvento(base, ev.config), config_evento: ev.config };
+  })
+));
+
+app.patch('/organizadores/eventos/:id/configuracoes', O.autenticarOrganizador, rota((req) =>
+  tx(async (c) => {
+    const ev = await E.eventoDoOrganizador(c, req.organizador.id, req.params.id);
+    const novos = C.validarConfigEvento(req.body.valores || req.body);
+    const config = { ...ev.config, ...novos };
+    const { rows } = await c.query(
+      'UPDATE events SET config=$2::jsonb WHERE id=$1 RETURNING config',
+      [ev.id, JSON.stringify(config)]
+    );
+    return { config_evento: rows[0].config };
+  })
 ));
 
 // ---------- Dispositivos ----------
@@ -267,16 +353,17 @@ app.get('/organizadores/eventos/:id/relatorios/conciliacao', O.autenticarOrganiz
 
 // ---------- Compra de bilhete ---------- cria pedido pendente. O pagamento é iniciado no prestador
 // e só o webhook torna o pedido pago.
-app.post('/eventos/:eventoId/pedidos', rota((req) =>
-  tx((c) => L.criarPedido(c, {
+app.post('/eventos/:eventoId/pedidos', rota(async (req) => {
+  const pedido = await tx((c) => L.criarPedido(c, {
     eventoId: req.params.eventoId,
     ticketTypeId: req.body.ticket_type_id,
     email: req.body.email,
     telefone: req.body.telefone,
     canal: req.body.canal || 'online',
     metodo: req.body.metodo,
-  }))
-));
+  }));
+  return PAG.iniciarCobrancaPedido(pedido);
+}));
 
 app.get('/pedidos/:id', rota(async (req) => {
   const { rows } = await pool.query('SELECT id, estado, wallet_id, valor FROM ticket_orders WHERE id=$1', [req.params.id]);
@@ -285,16 +372,17 @@ app.get('/pedidos/:id', rota(async (req) => {
 }));
 
 // Recarga: cria pedido de recarga pendente.
-app.post('/carteiras/:id/recargas', A.autenticar, rota((req) =>
-  tx(async (c) => {
+app.post('/carteiras/:id/recargas', A.autenticar, rota(async (req) => {
+  const recarga = await tx(async (c) => {
     await A.exigirCarteira(c, req.conta.id, req.params.id);
     return L.criarRecarga(c, {
       walletId: req.params.id,
       valor: Number(req.body.valor),
       metodo: req.body.metodo,
     });
-  })
-));
+  });
+  return PAG.iniciarCobrancaRecarga(recarga);
+}));
 
 app.get('/carteiras/:id', A.autenticar, rota((req) =>
   tx(async (c) => {
@@ -321,21 +409,43 @@ app.get('/qr/chave-publica', (_req, res) => {
 
 // Vendas e entradas recebem o token do QR, nunca o id da carteira. O
 // dispositivo autenticado fixa o evento, o vendedor e o ponto da venda.
-app.post('/vendas', D.autenticarDispositivo, rota((req) => {
-  const p = Q.verificar(req.body.qr);
-  if (req.dispositivo.event_id !== p.e) throw httpErr(403, 'dispositivo_de_outro_evento');
-  if (req.dispositivo.tipo !== 'vendedor') throw httpErr(403, 'dispositivo_nao_pode_vender');
-  return tx(async (c) => {
-    await Q.resolverPayload(c, p);
-    return L.venda(c, {
-      walletId: p.w,
-      valor: Number(req.body.valor),
-      sellerId: req.dispositivo.seller_id,
-      deviceId: req.dispositivo.id,
-      clientTxId: req.body.client_tx_id,
+app.post('/vendas', D.autenticarDispositivo, async (req, res) => {
+  try {
+    const p = Q.verificar(req.body.qr);
+    if (req.dispositivo.event_id !== p.e) throw httpErr(403, 'dispositivo_de_outro_evento');
+    if (req.dispositivo.tipo !== 'vendedor') throw httpErr(403, 'dispositivo_nao_pode_vender');
+    const r = await tx(async (c) => {
+      await Q.resolverPayload(c, p);
+      return L.venda(c, {
+        walletId: p.w,
+        valor: Number(req.body.valor),
+        sellerId: req.dispositivo.seller_id,
+        deviceId: req.dispositivo.id,
+        clientTxId: req.body.client_tx_id,
+      });
     });
-  });
-}));
+    res.json(r);
+  } catch (e) {
+    // Venda offline rejeitada (ex.: saldo entretanto gasto): fica registada
+    // para o organizador resolver, em vez de se perder a sincronização.
+    if (req.body.client_tx_id && e.message === 'saldo insuficiente') {
+      try {
+        const p = Q.verificar(req.body.qr);
+        await tx((c) => L.registarRejeicao(c, {
+          deviceId: req.dispositivo.id,
+          clientTxId: req.body.client_tx_id,
+          walletId: p.w,
+          valor: Number(req.body.valor),
+          motivo: 'saldo_insuficiente',
+        }));
+        return res.status(202).json({ resultado: 'rejeitado', motivo: 'saldo_insuficiente' });
+      } catch (e2) {
+        return erro(res, e2);
+      }
+    }
+    erro(res, e);
+  }
+});
 
 app.post('/transacoes/:id/estorno', D.autenticarAtor, rota((req) =>
   tx(async (c) => {
@@ -374,6 +484,75 @@ app.post('/entradas', D.autenticarDispositivo, rota((req) => {
     await Q.resolverPayload(c, p);
     return L.admitir(c, { walletId: p.w, deviceId: req.dispositivo.id });
   });
+}));
+
+// ---------- Pagamentos online ----------
+// Estado dos pagamentos e reconciliação manual. O webhook é a via normal de
+// confirmação; a reconciliação serve para recuperar webhooks perdidos.
+app.get('/organizadores/pagamentos/pendentes', O.autenticarOrganizador, rota(() =>
+  PAG.pagamentosPendentes()
+));
+
+app.post('/organizadores/pagamentos/reconciliar', O.autenticarOrganizador, rota(() =>
+  PAG.reconciliar()
+));
+
+// ---------- Reembolsos do saldo ----------
+app.post('/carteiras/:id/reembolsos', A.autenticar, rota((req) =>
+  tx(async (c) => {
+    await A.exigirCarteira(c, req.conta.id, req.params.id);
+    return RE.pedir(c, {
+      contaId: req.conta.id,
+      walletId: req.params.id,
+      valor: req.body.valor,
+      metodoDestino: req.body.metodo_destino,
+      destino: req.body.destino,
+      codigo: req.body.codigo,
+    });
+  })
+));
+
+app.get('/organizadores/eventos/:id/reembolsos', O.autenticarOrganizador, rota((req) =>
+  tx((c) => RE.listar(c, {
+    organizadorId: req.organizador.id,
+    eventoId: req.params.id,
+    estado: req.query.estado,
+  }))
+));
+
+app.post('/organizadores/reembolsos/:id/decidir', O.autenticarOrganizador, async (req, res) => {
+  try {
+    const reembolso = await tx((c) => RE.decidir(c, {
+      organizadorId: req.organizador.id,
+      refundId: req.params.id,
+      aprovar: Boolean(req.body.aprovar),
+      valorAprovado: req.body.valor_aprovado,
+      motivo: req.body.motivo,
+    }));
+    let pagamento = null;
+    if (req.body.aprovar) {
+      try {
+        pagamento = await RE.executarPagamento(reembolso.id);
+      } catch (e) {
+        return res.status(502).json({ erro: 'payout_indisponivel', reembolso });
+      }
+    }
+    res.json({ reembolso, pagamento });
+  } catch (e) {
+    erro(res, e);
+  }
+});
+
+app.post('/organizadores/reembolsos/:id/pagar', O.autenticarOrganizador, rota(async (req) => {
+  const r = await pool.query(
+    `SELECT r.id FROM refund_requests r
+       JOIN wallets w ON w.id=r.wallet_id
+       JOIN events e ON e.id=w.event_id
+      WHERE r.id=$1 AND e.organizer_id=$2`,
+    [req.params.id, req.organizador.id]
+  );
+  if (!r.rows[0]) throw httpErr(404, 'reembolso_inexistente');
+  return RE.executarPagamento(req.params.id);
 }));
 
 if (require.main === module) {

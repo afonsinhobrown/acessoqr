@@ -12,6 +12,11 @@ compra de bilhete, recarga, vendas nos pontos, admissão na porta e estornos.
 - `src/dispositivos.js` – emparelhamento de dispositivos e autenticação de vendedor/porta.
 - `src/eventos.js` – eventos, tipos de bilhete, pontos de venda e vendedores.
 - `src/relatorios.js` – vendas, recargas, resumo e conciliação do evento.
+- `src/config.js` – valores por omissão do ToR §18, validação e overrides por evento.
+- `src/paysuite.js` – cliente PaySuite (cobranças, consulta, payouts e assinatura do webhook).
+- `src/pagamentos.js` – inicia cobranças e confirma por webhook/reconciliação.
+- `src/reembolsos.js` – pedido com OTP, aprovação e payout do saldo.
+- `src/cifra.js` – cifra AES-256-GCM do destino dos reembolsos.
 - `src/auditoria.js` – registo em `audit_log` das acções administrativas.
 - `src/password.js` – hash de palavra-passe com scrypt.
 - `src/totp.js` – segundo factor TOTP (RFC 6238) e URI `otpauth`.
@@ -32,6 +37,8 @@ compra de bilhete, recarga, vendas nos pontos, admissão na porta e estornos.
 - `migrations/001_autenticacao_comprador.sql` – migração de `auth_challenges` e `sessions`.
 - `migrations/002_organizador_dispositivos.sql` – migração de organizadores, sessões e dispositivos.
 - `migrations/003_saldo_maximo.sql` – saldo máximo imposto em `aplicar_movimento`.
+- `migrations/004_configuracoes_pagamentos.sql` – configurações, `events.config`, reembolsos e `sync_rejections`.
+- `.env.example` – variáveis de ambiente necessárias.
 
 ## Configuração
 Variáveis de ambiente (nunca no código):
@@ -44,8 +51,13 @@ Variáveis de ambiente (nunca no código):
 - `QR_TOLERANCIA` – tolerância de relógio para leitores offline (por omissão 5).
 - `AUTH_SECRET` – segredo para hashes de códigos/contactos e assinatura JWT (obrigatório em produção).
 - `EMAIL_WEBHOOK_URL` / `EMAIL_WEBHOOK_TOKEN` – serviço de email (POST JSON `{para,assunto,texto}`).
-- `PUBLIC_URL` – base usada nos links de magic link.
+- `PUBLIC_URL` – base usada nos links de magic link e no `return_url` dos pagamentos.
 - `PORT` – opcional, por omissão 3000.
+- `PAYSUITE_API_URL` – opcional, por omissão `https://paysuite.tech/api/v1`.
+- `PAYSUITE_API_TOKEN` – token da API PaySuite; sem ele os pagamentos ficam pendentes.
+- `PAYSUITE_WEBHOOK_SECRET` – segredo HMAC do webhook `/webhooks/paysuite`.
+- `REFUND_ENC_KEY` – chave AES-256 em base64 para cifrar destinos de reembolso
+  (em desenvolvimento deriva de `AUTH_SECRET`).
 
 ## Correr
     npm install
@@ -73,6 +85,9 @@ autenticadora.
 | POST | /organizador/auth/refresh | organizador | roda o refresh token |
 | POST | /organizador/auth/logout | organizador | revoga a sessão |
 | GET | /organizador/eu | organizador (Bearer) | organizador e eventos |
+| GET | /organizadores/configuracoes | organizador (Bearer) | valores por omissão e definições |
+| PATCH | /organizadores/configuracoes | organizador (Bearer) | altera valores do organizador |
+| GET/PATCH | /organizadores/eventos/:id/configuracoes | organizador (Bearer) | overrides por evento |
 | POST | /organizadores/eventos/:id/dispositivos | organizador (Bearer) | cria dispositivo e código de pareamento |
 | GET | /organizadores/eventos/:id/dispositivos | organizador (Bearer) | lista dispositivos |
 | POST | /organizadores/dispositivos/:id/revogar | organizador (Bearer) | revoga sem apagar histórico |
@@ -90,10 +105,17 @@ autenticadora.
 | GET | /organizadores/eventos/:id/relatorios/vendas | organizador (Bearer) | vendas por hora/ponto/vendedor (`desde`,`ate`) |
 | GET | /organizadores/eventos/:id/relatorios/recargas | organizador (Bearer) | recargas por método e estado |
 | GET | /organizadores/eventos/:id/relatorios/conciliacao | organizador (Bearer) | saldo das carteiras vs soma dos movimentos |
-| POST | /eventos/:id/pedidos | comprador | cria pedido pendente |
-| POST | /webhooks/pagamento | prestador | confirma pedido ou recarga (assinatura HMAC) |
+| POST | /eventos/:id/pedidos | comprador | cria pedido e cobrança PaySuite |
+| POST | /webhooks/paysuite | PaySuite | confirma pagamento/reembolso (HMAC) |
+| POST | /webhooks/pagamento | prestador genérico | confirma pedido ou recarga (HMAC) |
 | GET | /pedidos/:id | comprador | estado do pedido |
-| POST | /carteiras/:id/recargas | comprador (Bearer) | cria recarga pendente |
+| POST | /carteiras/:id/recargas | comprador (Bearer) | cria recarga e cobrança PaySuite |
+| POST | /carteiras/:id/reembolsos | comprador (Bearer) | pede reembolso (OTP) |
+| GET | /organizadores/eventos/:id/reembolsos | organizador (Bearer) | lista pedidos de reembolso |
+| POST | /organizadores/reembolsos/:id/decidir | organizador (Bearer) | aprova/recusa e paga |
+| POST | /organizadores/reembolsos/:id/pagar | organizador (Bearer) | repete o payout |
+| GET | /organizadores/pagamentos/pendentes | organizador (Bearer) | cobranças pendentes |
+| POST | /organizadores/pagamentos/reconciliar | organizador (Bearer) | reconcilia com a PaySuite |
 | GET | /carteiras/:id | comprador (Bearer) | saldo |
 | POST | /carteiras/:id/qr | comprador (Bearer) | emite token QR rotativo |
 | GET | /qr/chave-publica | leitor | chave pública para validar offline |
@@ -131,18 +153,26 @@ autenticadora.
 - Todas as acções do organizador (evento, catálogo, dispositivos) ficam em `audit_log`.
 - A conciliação compara a soma de `transactions.valor` com a soma de `wallets.saldo`
   do evento; qualquer diferença é um erro de integridade e aparece em `diferenca`.
+- Pagamentos online passam pela PaySuite (`ACQ*/ACQR*`). A cobrança é criada fora da
+  transacção e o pedido só fica pago no webhook assinado, nunca por resposta do cliente.
+- A reconciliação consulta pendentes com mais de 10 minutos e recupera webhooks perdidos.
+- Reembolsos: o comprador pede com OTP; o organizador aprova (débito no ledger) e o
+  payout é feito por `ACQRF*`. O destino fica cifrado com AES-256-GCM.
+- Se a PaySuite não estiver configurada, pedidos e recargas ficam pendentes sem cobrança
+  e os reembolsos aprovados aguardam pagamento manual.
+- Vendas offline têm limites por venda e por dispositivo numa janela de horas; vendas
+  offline rejeitadas por saldo insuficiente ficam em `sync_rejections`.
+- Os valores por omissão do ToR §18 estão em `src/config.js` e são editáveis pelo
+  organizador, com overrides por evento.
 
 ## Por fazer (próximas fases)
 1. **Fecho de caixa e pagamentos presenciais**: compra e recarga em dinheiro
    confirmadas pelo organizador, contagem de caixa e exportação CSV/XLSX.
-2. **Integração de pagamentos** (M-Pesa, e-Mola, mKesh, cartão): iniciar pagamento e
-   adaptar a assinatura do webhook a cada prestador. Precisa de credenciais de sandbox.
-3. **Reembolsos** com política escrita e OTP em acções sensíveis.
-4. **Frontend**: página de compra, área do cliente, PWA do vendedor e leitor de porta.
-5. Limites de risco do modo offline e sincronização das vendas em fila.
-6. Testes de carga e rate limiting nas rotas públicas (incluindo login do organizador).
+2. **Reconciliação automática** por cron e alertas quando a PaySuite falha.
+3. **Frontend**: página de compra, área do cliente/admin, PWA do vendedor e leitor de porta.
+4. Testes de carga e rate limiting nas rotas públicas (incluindo login do organizador).
 
 ## Aviso
-Não está pronto para produção. Falta o fluxo de vendas offline assinadas, os limites
-de risco e a autenticação com rate limiting do login do organizador. Não o publiques
-com dinheiro real antes das fases 1 a 3.
+Não está pronto para produção. Falta o frontend, o rate limiting do login do organizador
+e testes contra as credenciais reais/sandbox da PaySuite. Não o publiques com dinheiro
+real antes de validar webhooks e payouts em homologação.

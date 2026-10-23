@@ -2,6 +2,7 @@
 // venda e vendedores. Todas as acções ficam no audit_log.
 const { httpErr } = require('./errors');
 const { registar } = require('./auditoria');
+const C = require('./config');
 
 const ESTADOS = ['rascunho', 'publicado', 'em_curso', 'encerrado', 'cancelado'];
 const TRANSICOES = {
@@ -62,13 +63,15 @@ async function criarEvento(c, { organizadorId, dados }) {
   validarDatas(inicio, fim);
   const moeda = validarMoeda(dados.moeda);
   const saldoMaximo = dados.saldo_maximo === undefined || dados.saldo_maximo === null
-    ? null
+    ? await C.valor(c, organizadorId, 'saldo_maximo_padrao')
     : inteiroPositivo(dados.saldo_maximo, 'saldo_maximo');
+  const configEvento = C.validarConfigEvento(dados.config);
 
   const { rows } = await c.query(
-    `INSERT INTO events (organizer_id, nome, local, inicio, fim, moeda, saldo_maximo)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [organizadorId, nome, dados.local || null, inicio, fim, moeda, saldoMaximo]
+    `INSERT INTO events (organizer_id, nome, local, inicio, fim, moeda, saldo_maximo, config)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING *`,
+    [organizadorId, nome, dados.local || null, inicio, fim, moeda, saldoMaximo,
+     JSON.stringify(configEvento)]
   );
   const ev = rows[0];
   await registar(c, { actorId: organizadorId, acao: 'evento.criar', alvo: ev.id, metadados: { nome } });
@@ -88,13 +91,18 @@ async function actualizarEvento(c, { organizadorId, eventoId, dados }) {
   const saldoMaximo = dados.saldo_maximo === undefined
     ? ev.saldo_maximo
     : dados.saldo_maximo === null
-      ? null
+      ? await C.valor(c, organizadorId, 'saldo_maximo_padrao')
       : inteiroPositivo(dados.saldo_maximo, 'saldo_maximo');
+  const configEvento = dados.config === undefined
+    ? ev.config
+    : { ...ev.config, ...C.validarConfigEvento(dados.config) };
 
   const { rows } = await c.query(
-    `UPDATE events SET nome=$2, local=$3, inicio=$4, fim=$5, moeda=$6, saldo_maximo=$7
+    `UPDATE events SET nome=$2, local=$3, inicio=$4, fim=$5, moeda=$6,
+            saldo_maximo=$7, config=$8::jsonb
       WHERE id=$1 RETURNING *`,
-    [eventoId, nome, dados.local === undefined ? ev.local : dados.local, inicio, fim, moeda, saldoMaximo]
+    [eventoId, nome, dados.local === undefined ? ev.local : dados.local, inicio, fim, moeda,
+     saldoMaximo, JSON.stringify(configEvento)]
   );
   await registar(c, { actorId: organizadorId, acao: 'evento.actualizar', alvo: eventoId });
   return rows[0];

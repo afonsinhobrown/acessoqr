@@ -24,6 +24,14 @@ CREATE TABLE organizer_sessions (
 );
 CREATE INDEX organizer_sessions_por_conta ON organizer_sessions (organizer_id) WHERE revogado_em IS NULL;
 
+CREATE TABLE organizer_settings (
+  organizer_id uuid NOT NULL REFERENCES organizers(id),
+  chave text NOT NULL,
+  valor jsonb NOT NULL,
+  actualizado_em timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (organizer_id, chave)
+);
+
 CREATE TABLE events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   organizer_id uuid NOT NULL REFERENCES organizers(id),
@@ -35,6 +43,7 @@ CREATE TABLE events (
   estado text NOT NULL DEFAULT 'rascunho'
     CHECK (estado IN ('rascunho','publicado','em_curso','encerrado','cancelado')),
   saldo_maximo bigint CHECK (saldo_maximo IS NULL OR saldo_maximo > 0),
+  config jsonb NOT NULL DEFAULT '{}'::jsonb,
   CHECK (fim > inicio)
 );
 
@@ -174,6 +183,7 @@ CREATE TABLE recharges (
   metodo text NOT NULL CHECK (metodo IN ('mpesa','emola','mkesh','cartao','presencial')),
   estado text NOT NULL DEFAULT 'pendente' CHECK (estado IN ('pendente','pago','falhou','expirado')),
   ref_prestador text UNIQUE,
+  pagamento_id text,
   criado_em timestamptz NOT NULL DEFAULT now(),
   confirmado_em timestamptz
 );
@@ -210,6 +220,7 @@ CREATE TABLE ticket_orders (
   metodo text NOT NULL CHECK (metodo IN ('mpesa','emola','mkesh','cartao','dinheiro')),
   estado text NOT NULL DEFAULT 'pendente' CHECK (estado IN ('pendente','pago','falhou','cancelado')),
   ref_prestador text UNIQUE,
+  pagamento_id text,
   criado_em timestamptz NOT NULL DEFAULT now(),
   pago_em timestamptz,
   CHECK (email IS NOT NULL OR telefone IS NOT NULL OR canal = 'presencial'),
@@ -225,9 +236,16 @@ CREATE TABLE refund_requests (
   metodo_destino text NOT NULL CHECK (metodo_destino IN ('mpesa','emola','mkesh','banco')),
   destino_cifrado bytea NOT NULL,
   otp_verificado_em timestamptz NOT NULL,
-  estado text NOT NULL DEFAULT 'pendente' CHECK (estado IN ('pendente','aprovado','recusado','pago')),
+  estado text NOT NULL DEFAULT 'pendente'
+    CHECK (estado IN ('pendente','aprovado','recusado','falhou','pago')),
+  ref_prestador text UNIQUE,
+  pagamento_id text,
   decidido_por uuid,
+  decidido_em timestamptz,
+  motivo_recusa text,
+  pago_em timestamptz,
   criado_em timestamptz NOT NULL DEFAULT now(),
+  actualizado_em timestamptz NOT NULL DEFAULT now(),
   CHECK (valor_aprovado IS NULL OR valor_aprovado <= valor_pedido)
 );
 
