@@ -2,15 +2,21 @@
 // base de dados dentro de uma transacção (tx), para que o saldo e o ledger
 // nunca fiquem dessincronizados.
 const { httpErr } = require('./errors');
+const { normalizarEmail, normalizarTelefone } = require('./contacto');
 
 async function aplicarMovimento(c, m) {
-  const { rows } = await c.query(
-    'SELECT aplicar_movimento($1,$2,$3,$4,$5,$6,$7,$8,$9) AS id',
-    [m.wallet, m.tipo, m.valor, m.origem,
-     m.seller || null, m.device || null, m.clientTx || null,
-     m.recharge || null, m.anula || null]
-  );
-  return rows[0].id;
+  try {
+    const { rows } = await c.query(
+      'SELECT aplicar_movimento($1,$2,$3,$4,$5,$6,$7,$8,$9) AS id',
+      [m.wallet, m.tipo, m.valor, m.origem,
+       m.seller || null, m.device || null, m.clientTx || null,
+       m.recharge || null, m.anula || null]
+    );
+    return rows[0].id;
+  } catch (e) {
+    if (e.code === '23505') throw httpErr(409, 'duplicado');
+    throw e;
+  }
 }
 
 // ---------- Compra de bilhete ----------
@@ -47,6 +53,24 @@ async function confirmarPedido(c, pedidoId, refPrestador) {
     'INSERT INTO tickets (event_id, ticket_type_id, wallet_id) VALUES ($1,$2,$3)',
     [p.event_id, p.ticket_type_id, w.id]
   );
+
+  // Guarda o contacto do comprador na carteira. O login por OTP/magic link
+  // usa isto para ligar a conta à carteira e marcar o contacto verificado.
+  const email = normalizarEmail(p.email);
+  if (email)
+    await c.query(
+      `INSERT INTO wallet_contacts (wallet_id, tipo, valor_normalizado)
+       VALUES ($1,'email',$2) ON CONFLICT DO NOTHING`,
+      [w.id, email]
+    );
+  const telefone = normalizarTelefone(p.telefone);
+  if (telefone)
+    await c.query(
+      `INSERT INTO wallet_contacts (wallet_id, tipo, valor_normalizado)
+       VALUES ($1,'telefone',$2) ON CONFLICT DO NOTHING`,
+      [w.id, telefone]
+    );
+
   if (Number(tt.carga_inicial) > 0) {
     await aplicarMovimento(c, {
       wallet: w.id, tipo: 'carga_inicial', valor: Number(tt.carga_inicial), origem: 'online',

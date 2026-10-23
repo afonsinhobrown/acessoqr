@@ -60,6 +60,17 @@ CREATE TABLE accounts (
   CHECK (email IS NOT NULL OR telefone IS NOT NULL)
 );
 
+CREATE TABLE sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL REFERENCES accounts(id),
+  refresh_token_hash text NOT NULL UNIQUE,
+  dispositivo text,
+  expira_em timestamptz NOT NULL,
+  revogado_em timestamptz,
+  criado_em timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX sessions_por_conta ON sessions (account_id) WHERE revogado_em IS NULL;
+
 CREATE TABLE account_wallets (
   account_id uuid NOT NULL REFERENCES accounts(id),
   wallet_id uuid NOT NULL REFERENCES wallets(id),
@@ -70,6 +81,7 @@ CREATE TABLE account_wallets (
 CREATE TABLE auth_challenges (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   canal text NOT NULL CHECK (canal IN ('email','sms','whatsapp')),
+  tipo text NOT NULL DEFAULT 'otp' CHECK (tipo IN ('otp','magic_link')),
   contacto_hash text NOT NULL,
   codigo_hash text NOT NULL,
   tentativas smallint NOT NULL DEFAULT 0,
@@ -78,6 +90,8 @@ CREATE TABLE auth_challenges (
   ip_hash text,
   criado_em timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX auth_challenges_por_contacto ON auth_challenges (contacto_hash, criado_em);
+CREATE INDEX auth_challenges_por_ip ON auth_challenges (ip_hash, criado_em) WHERE ip_hash IS NOT NULL;
 
 CREATE TABLE wallet_access_links (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
