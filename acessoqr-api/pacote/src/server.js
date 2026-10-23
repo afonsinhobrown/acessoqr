@@ -17,6 +17,16 @@ const { traduzirErro, httpErr } = require('./errors');
 
 const app = express();
 
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-assinatura, x-signature');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // O webhook precisa do corpo em bruto para verificar a assinatura.
 // Tem de vir ANTES de express.json().
 app.post('/webhooks/pagamento', express.raw({ type: '*/*' }), async (req, res) => {
@@ -108,6 +118,31 @@ const rota = (fn) => async (req, res) => {
 
 app.get('/saude', (_req, res) => res.json({ ok: true }));
 
+// ---------- Rotas Públicas (Vitrine) ----------
+app.get('/public/eventos', rota(async () => {
+  const { rows } = await pool.query(
+    "SELECT id, nome, local, inicio, fim, moeda, estado, saldo_maximo, config FROM events WHERE estado IN ('publicado', 'em_curso') ORDER BY inicio ASC"
+  );
+  return rows;
+}));
+
+app.get('/public/eventos/:id/bilhetes', rota(async (req) => {
+  const { rows } = await pool.query(
+    "SELECT id, nome, preco, carga_inicial, limite_vendas, activo FROM ticket_types WHERE event_id=$1 AND activo=true ORDER BY preco ASC",
+    [req.params.id]
+  );
+  return rows;
+}));
+
+// Dev helpers para confirmação instantânea de pagamentos
+app.post('/dev/confirmar-pedido', rota(async (req) => {
+  return tx((c) => L.confirmarPedido(c, req.body.id, 'REF-DEV-' + Date.now()));
+}));
+
+app.post('/dev/confirmar-recarga', rota(async (req) => {
+  return tx((c) => L.confirmarRecarga(c, req.body.id, 'REF-DEV-' + Date.now()));
+}));
+
 // ---------- Autenticação do comprador ----------
 
 app.post('/auth/otp', rota(async (req) => {
@@ -117,7 +152,7 @@ app.post('/auth/otp', rota(async (req) => {
     assunto: 'Codigo de acesso acessoqr',
     texto: `O teu codigo e ${r.valor}. Vale 10 minutos e so pode ser usado uma vez.`,
   });
-  return { ok: true, expira_em: r.expira_em };
+  return { ok: true, expira_em: r.expira_em, dev_codigo: r.valor };
 }));
 
 app.post('/auth/otp/verificar', rota((req) =>

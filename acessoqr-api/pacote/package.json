@@ -5,7 +5,7 @@
   "description": "Núcleo de pagamentos sem numerário para eventos (carteira + QR)",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node --env-file=.env src/server.js",
     "test": "node --test test/",
     "criar-organizador": "node scripts/criar-organizador.js"
   },
