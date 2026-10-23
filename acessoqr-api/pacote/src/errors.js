@@ -14,6 +14,8 @@ function traduzirErro(e) {
   if (e.status) return { status: e.status, corpo: { erro: e.message } };
   if (e.message && e.message.includes('saldo insuficiente'))
     return { status: 402, corpo: { erro: 'saldo_insuficiente' } };
+  if (e.message && e.message.includes('saldo maximo excedido'))
+    return { status: 409, corpo: { erro: 'saldo_maximo_excedido' } };
   if (e.code === '23505') return { status: 409, corpo: { erro: 'duplicado' } };
   if (e.code === '23514') return { status: 400, corpo: { erro: 'regra_violada' } };
   if (e.code === '23503') return { status: 400, corpo: { erro: 'referencia_inexistente' } };

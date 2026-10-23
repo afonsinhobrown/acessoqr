@@ -19,7 +19,7 @@ async function comTeste(fn) {
 async function cenario() {
   const org = (await c.query("INSERT INTO organizers(nome) VALUES ('Teste') RETURNING id")).rows[0].id;
   const ev = (await c.query(
-    `INSERT INTO events(organizer_id,nome,inicio,fim) VALUES ($1,'Evento',now(),now()+interval '1 day') RETURNING id`,
+    `INSERT INTO events(organizer_id,nome,inicio,fim,estado) VALUES ($1,'Evento',now(),now()+interval '1 day','publicado') RETURNING id`,
     [org])).rows[0].id;
   const tt = (await c.query(
     'INSERT INTO ticket_types(event_id,nome,preco,carga_inicial) VALUES ($1,\'Geral\',500,1000) RETURNING id',

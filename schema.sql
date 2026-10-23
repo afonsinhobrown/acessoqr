@@ -266,15 +266,25 @@ CREATE TRIGGER transactions_imutavel
 CREATE FUNCTION aplicar_movimento(p_wallet uuid, p_tipo text, p_valor bigint, p_origem text,
   p_seller uuid, p_device uuid, p_client_tx uuid, p_recharge uuid, p_anula uuid)
 RETURNS uuid AS $$
-DECLARE v_saldo bigint; v_id uuid;
+DECLARE v_saldo bigint; v_estado text; v_max bigint; v_id uuid;
 BEGIN
-  UPDATE wallets SET saldo = saldo + p_valor, versao = versao + 1
-   WHERE id = p_wallet AND estado = 'ativa' AND saldo + p_valor >= 0
-  RETURNING saldo INTO v_saldo;
+  SELECT w.saldo, w.estado, e.saldo_maximo
+    INTO v_saldo, v_estado, v_max
+    FROM wallets w JOIN events e ON e.id = w.event_id
+   WHERE w.id = p_wallet
+   FOR UPDATE OF w;
 
-  IF NOT FOUND THEN
+  IF NOT FOUND OR v_estado <> 'ativa' OR v_saldo + p_valor < 0 THEN
     RAISE EXCEPTION 'saldo insuficiente ou carteira inactiva';
   END IF;
+
+  IF p_valor > 0 AND v_max IS NOT NULL AND v_saldo + p_valor > v_max THEN
+    RAISE EXCEPTION 'saldo maximo excedido';
+  END IF;
+
+  UPDATE wallets SET saldo = saldo + p_valor, versao = versao + 1
+   WHERE id = p_wallet
+  RETURNING saldo INTO v_saldo;
 
   INSERT INTO transactions (wallet_id, tipo, valor, saldo_apos, origem, seller_id, device_id,
                             client_tx_id, recharge_id, anula_transacao_id)

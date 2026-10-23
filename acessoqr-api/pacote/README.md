@@ -10,6 +10,8 @@ compra de bilhete, recarga, vendas nos pontos, admissão na porta e estornos.
 - `src/auth.js` – OTP, magic link, sessões e middleware de autenticação do comprador.
 - `src/organizador.js` – palavra-passe (scrypt), TOTP, sessões e middleware do organizador.
 - `src/dispositivos.js` – emparelhamento de dispositivos e autenticação de vendedor/porta.
+- `src/eventos.js` – eventos, tipos de bilhete, pontos de venda e vendedores.
+- `src/auditoria.js` – registo em `audit_log` das acções administrativas.
 - `src/password.js` – hash de palavra-passe com scrypt.
 - `src/totp.js` – segundo factor TOTP (RFC 6238) e URI `otpauth`.
 - `src/jwt.js` – JWT HS256 do token de acesso (15 min), sem dependências.
@@ -23,9 +25,11 @@ compra de bilhete, recarga, vendas nos pontos, admissão na porta e estornos.
 - `test/qr.test.js` – testes do token QR (validade, tolerância, adulteração).
 - `test/auth.test.js` – testes de OTP, magic link, limites e sessões.
 - `test/organizador.test.js` – testes de login 2FA, sessões e emparelhamento de dispositivos.
+- `test/eventos.test.js` – eventos, estados, catálogo, auditoria, limites e saldo máximo.
 - `test/totp.test.js` / `test/password.test.js` – testes unitários de TOTP e scrypt.
 - `migrations/001_autenticacao_comprador.sql` – migração de `auth_challenges` e `sessions`.
 - `migrations/002_organizador_dispositivos.sql` – migração de organizadores, sessões e dispositivos.
+- `migrations/003_saldo_maximo.sql` – saldo máximo imposto em `aplicar_movimento`.
 
 ## Configuração
 Variáveis de ambiente (nunca no código):
@@ -48,6 +52,7 @@ Variáveis de ambiente (nunca no código):
     DATABASE_URL=... AUTH_SECRET=... WEBHOOK_SECRET=... npm start
 
 Os testes usam ROLLBACK e não deixam dados. Corre-os primeiro no branch de laboratório.
+Numa base vazia aplica `schema.sql`; numa base existente aplica as migrações por ordem.
 O script do organizador mostra o segredo TOTP uma única vez: guarda-o na aplicação
 autenticadora.
 
@@ -70,6 +75,15 @@ autenticadora.
 | GET | /organizadores/eventos/:id/dispositivos | organizador (Bearer) | lista dispositivos |
 | POST | /organizadores/dispositivos/:id/revogar | organizador (Bearer) | revoga sem apagar histórico |
 | POST | /dispositivos/parear | dispositivo | troca código + chave pública por token |
+| POST | /organizadores/eventos | organizador (Bearer) | cria evento em rascunho |
+| GET | /organizadores/eventos/:id | organizador (Bearer) | detalhe do evento |
+| PATCH | /organizadores/eventos/:id | organizador (Bearer) | actualiza dados do evento |
+| POST | /organizadores/eventos/:id/estado | organizador (Bearer) | publicar, iniciar, encerrar, cancelar |
+| POST/GET | /organizadores/eventos/:id/tipos-bilhete | organizador (Bearer) | catálogo de bilhetes |
+| PATCH | /organizadores/tipos-bilhete/:id | organizador (Bearer) | actualiza tipo de bilhete |
+| POST/GET | /organizadores/eventos/:id/pontos-venda | organizador (Bearer) | pontos de venda |
+| POST/GET | /organizadores/eventos/:id/vendedores | organizador (Bearer) | vendedores |
+| PATCH | /organizadores/vendedores/:id | organizador (Bearer) | actualiza vendedor |
 | POST | /eventos/:id/pedidos | comprador | cria pedido pendente |
 | POST | /webhooks/pagamento | prestador | confirma pedido ou recarga (assinatura HMAC) |
 | GET | /pedidos/:id | comprador | estado do pedido |
@@ -104,16 +118,24 @@ autenticadora.
 - As rotas de venda e entrada deixam de aceitar `seller_id`/`device_id` no corpo: o
   vendedor, o ponto e o evento vêm do token do dispositivo. O estorno aceita
   dispositivo vendedor ou organizador, sempre dentro do próprio evento.
+- O evento segue o ciclo `rascunho → publicado → em_curso → encerrado` (ou
+  `cancelado`). Só `publicado` e `em_curso` aceitam pedidos, recargas e vendas.
+- O saldo máximo é imposto em `aplicar_movimento`, na base de dados, e o limite de
+  vendas por tipo de bilhete é verificado ao criar o pedido.
+- Todas as acções do organizador (evento, catálogo, dispositivos) ficam em `audit_log`.
 
 ## Por fazer (próximas fases)
-1. **Integração de pagamentos** (M-Pesa, e-Mola, mKesh, cartão): iniciar pagamento e
+1. **Relatórios e conciliação**: vendas por ponto/vendedor, recargas por método,
+   fecho de caixa e exportação CSV/XLSX.
+2. **Integração de pagamentos** (M-Pesa, e-Mola, mKesh, cartão): iniciar pagamento e
    adaptar a assinatura do webhook a cada prestador. Precisa de credenciais de sandbox.
-2. **Reembolsos** com política escrita e OTP em acções sensíveis.
-3. **Pagamentos presenciais** (dinheiro no ponto de venda) pelo painel autenticado do organizador.
-4. **Frontend**: página de compra, área do cliente, PWA do vendedor e leitor de porta.
-5. Limites de risco do modo offline e sincronização das vendas em fila.
-6. Testes de carga e rate limiting nas rotas públicas (incluindo login do organizador).
+3. **Reembolsos** com política escrita e OTP em acções sensíveis.
+4. **Pagamentos presenciais** (dinheiro no ponto de venda) pelo painel autenticado do organizador.
+5. **Frontend**: página de compra, área do cliente, PWA do vendedor e leitor de porta.
+6. Limites de risco do modo offline e sincronização das vendas em fila.
+7. Testes de carga e rate limiting nas rotas públicas (incluindo login do organizador).
 
 ## Aviso
-Não está pronto para produção. Falta testar o fluxo de vendas offline assinadas e os
-limites de risco. Não o publiques com dinheiro real antes das fases 1 a 3.
+Não está pronto para produção. Falta o fluxo de vendas offline assinadas, os limites
+de risco e a autenticação com rate limiting do login do organizador. Não o publiques
+com dinheiro real antes das fases 1 a 3.

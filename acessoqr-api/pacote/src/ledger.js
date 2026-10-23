@@ -22,12 +22,25 @@ async function aplicarMovimento(c, m) {
 // ---------- Compra de bilhete ----------
 
 async function criarPedido(c, { eventoId, ticketTypeId, email, telefone, canal, metodo }) {
+  const ev = (await c.query('SELECT estado FROM events WHERE id=$1', [eventoId])).rows[0];
+  if (!ev) throw httpErr(404, 'evento_inexistente');
+  if (ev.estado !== 'publicado' && ev.estado !== 'em_curso')
+    throw httpErr(409, 'evento_nao_aceita_pedidos');
+
   const tt = (await c.query(
     'SELECT * FROM ticket_types WHERE id=$1 AND event_id=$2 AND activo', [ticketTypeId, eventoId]
   )).rows[0];
   if (!tt) throw httpErr(404, 'tipo_de_bilhete_inexistente_ou_inactivo');
   if (!email && !telefone && canal === 'online')
     throw httpErr(400, 'email_ou_telefone_obrigatorio');
+
+  if (tt.limite_vendas !== null) {
+    const n = (await c.query(
+      "SELECT count(*)::int AS n FROM ticket_orders WHERE ticket_type_id=$1 AND estado='pago'",
+      [ticketTypeId]
+    )).rows[0].n;
+    if (n >= tt.limite_vendas) throw httpErr(409, 'limite_de_vendas_atingido');
+  }
 
   const { rows } = await c.query(
     `INSERT INTO ticket_orders (event_id, ticket_type_id, email, telefone, canal, valor, metodo)
@@ -87,10 +100,17 @@ async function confirmarPedido(c, pedidoId, refPrestador) {
 // ---------- Recargas ----------
 
 async function criarRecarga(c, { walletId, valor, metodo }) {
-  if (!(valor > 0)) throw httpErr(400, 'valor_deve_ser_positivo');
-  const w = (await c.query('SELECT estado FROM wallets WHERE id=$1', [walletId])).rows[0];
+  if (!Number.isInteger(valor) || valor <= 0) throw httpErr(400, 'valor_deve_ser_positivo');
+  const w = (await c.query(
+    `SELECT w.estado, e.estado AS evento_estado
+       FROM wallets w JOIN events e ON e.id = w.event_id
+      WHERE w.id=$1`,
+    [walletId]
+  )).rows[0];
   if (!w) throw httpErr(404, 'carteira_inexistente');
   if (w.estado !== 'ativa') throw httpErr(409, 'carteira_inactiva');
+  if (w.evento_estado !== 'publicado' && w.evento_estado !== 'em_curso')
+    throw httpErr(409, 'evento_nao_aceita_recargas');
   const { rows } = await c.query(
     'INSERT INTO recharges (wallet_id, valor, metodo) VALUES ($1,$2,$3) RETURNING *',
     [walletId, valor, metodo]
@@ -116,8 +136,19 @@ async function confirmarRecarga(c, recargaId, refPrestador) {
 // ---------- Vendas (bares, barracas) ----------
 
 async function venda(c, { walletId, valor, sellerId, deviceId, clientTxId }) {
-  if (!(valor > 0)) throw httpErr(400, 'valor_deve_ser_positivo');
+  if (!Number.isInteger(valor) || valor <= 0) throw httpErr(400, 'valor_deve_ser_positivo');
   if (clientTxId && !deviceId) throw httpErr(400, 'venda_offline_requer_dispositivo');
+  const w = (await c.query(
+    `SELECT w.estado, e.estado AS evento_estado
+       FROM wallets w JOIN events e ON e.id = w.event_id
+      WHERE w.id=$1`,
+    [walletId]
+  )).rows[0];
+  if (!w) throw httpErr(404, 'carteira_inexistente');
+  if (w.estado !== 'ativa') throw httpErr(409, 'carteira_inactiva');
+  if (w.evento_estado !== 'publicado' && w.evento_estado !== 'em_curso')
+    throw httpErr(409, 'evento_encerrado');
+
   const id = await aplicarMovimento(c, {
     wallet: walletId,
     tipo: 'consumo',

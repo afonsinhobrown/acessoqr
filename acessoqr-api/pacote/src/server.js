@@ -5,6 +5,7 @@ const L = require('./ledger');
 const Q = require('./qr');
 const A = require('./auth');
 const O = require('./organizador');
+const E = require('./eventos');
 const D = require('./dispositivos');
 const { enviar } = require('./mailer');
 const { traduzirErro, httpErr } = require('./errors');
@@ -167,6 +168,76 @@ app.post('/dispositivos/parear', rota((req) =>
   tx((c) => D.parearDispositivo(c, {
     codigo: req.body.codigo,
     chavePublica: req.body.chave_publica,
+  }))
+));
+
+// ---------- Eventos e operação do organizador ----------
+
+app.post('/organizadores/eventos', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.criarEvento(c, { organizadorId: req.organizador.id, dados: req.body }))
+));
+
+app.get('/organizadores/eventos/:id', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.eventoDoOrganizador(c, req.organizador.id, req.params.id))
+));
+
+app.patch('/organizadores/eventos/:id', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.actualizarEvento(c, {
+    organizadorId: req.organizador.id, eventoId: req.params.id, dados: req.body,
+  }))
+));
+
+app.post('/organizadores/eventos/:id/estado', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.mudarEstadoEvento(c, {
+    organizadorId: req.organizador.id, eventoId: req.params.id, estado: req.body.estado,
+  }))
+));
+
+app.post('/organizadores/eventos/:id/tipos-bilhete', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.criarTipoBilhete(c, {
+    organizadorId: req.organizador.id, eventoId: req.params.id, dados: req.body,
+  }))
+));
+
+app.get('/organizadores/eventos/:id/tipos-bilhete', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.listarTiposBilhete(c, {
+    organizadorId: req.organizador.id, eventoId: req.params.id,
+  }))
+));
+
+app.patch('/organizadores/tipos-bilhete/:id', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.actualizarTipoBilhete(c, {
+    organizadorId: req.organizador.id, tipoId: req.params.id, dados: req.body,
+  }))
+));
+
+app.post('/organizadores/eventos/:id/pontos-venda', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.criarPontoVenda(c, {
+    organizadorId: req.organizador.id, eventoId: req.params.id, dados: req.body,
+  }))
+));
+
+app.get('/organizadores/eventos/:id/pontos-venda', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.listarPontosVenda(c, {
+    organizadorId: req.organizador.id, eventoId: req.params.id,
+  }))
+));
+
+app.post('/organizadores/eventos/:id/vendedores', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.criarVendedor(c, {
+    organizadorId: req.organizador.id, eventoId: req.params.id, dados: req.body,
+  }))
+));
+
+app.get('/organizadores/eventos/:id/vendedores', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.listarVendedores(c, {
+    organizadorId: req.organizador.id, eventoId: req.params.id,
+  }))
+));
+
+app.patch('/organizadores/vendedores/:id', O.autenticarOrganizador, rota((req) =>
+  tx((c) => E.actualizarVendedor(c, {
+    organizadorId: req.organizador.id, vendedorId: req.params.id, dados: req.body,
   }))
 ));
 
