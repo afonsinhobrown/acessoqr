@@ -5,8 +5,24 @@ CREATE TABLE organizers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   nome text NOT NULL,
   nuit text,
+  email text,
+  password_hash text,
+  totp_secret text,
+  activo boolean NOT NULL DEFAULT true,
   criado_em timestamptz NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX organizers_email_unico ON organizers (lower(email)) WHERE email IS NOT NULL;
+
+CREATE TABLE organizer_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  organizer_id uuid NOT NULL REFERENCES organizers(id),
+  refresh_token_hash text NOT NULL UNIQUE,
+  dispositivo text,
+  expira_em timestamptz NOT NULL,
+  revogado_em timestamptz,
+  criado_em timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX organizer_sessions_por_conta ON organizer_sessions (organizer_id) WHERE revogado_em IS NULL;
 
 CREATE TABLE events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -116,9 +132,14 @@ CREATE TABLE devices (
   event_id uuid NOT NULL REFERENCES events(id),
   tipo text NOT NULL CHECK (tipo IN ('porta','vendedor')),
   nome text NOT NULL,
+  seller_id uuid,
   chave_publica text,
+  pairing_hash text,
+  pairing_expira_em timestamptz,
+  pareado_em timestamptz,
   activo boolean NOT NULL DEFAULT true
 );
+CREATE UNIQUE INDEX devices_pairing_hash_unico ON devices (pairing_hash) WHERE pairing_hash IS NOT NULL;
 
 CREATE TABLE entry_scans (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -142,6 +163,9 @@ CREATE TABLE sellers (
   nome text NOT NULL,
   activo boolean NOT NULL DEFAULT true
 );
+
+ALTER TABLE devices
+  ADD CONSTRAINT devices_seller_fk FOREIGN KEY (seller_id) REFERENCES sellers(id);
 
 CREATE TABLE recharges (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

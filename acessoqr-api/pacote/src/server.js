@@ -4,8 +4,10 @@ const { pool, tx } = require('./db');
 const L = require('./ledger');
 const Q = require('./qr');
 const A = require('./auth');
+const O = require('./organizador');
+const D = require('./dispositivos');
 const { enviar } = require('./mailer');
-const { traduzirErro } = require('./errors');
+const { traduzirErro, httpErr } = require('./errors');
 
 const app = express();
 
@@ -109,6 +111,65 @@ app.get('/auth/eu', A.autenticar, rota((req) =>
   tx((c) => A.contaComCarteiras(c, req.conta.id))
 ));
 
+// ---------- Autenticação do organizador ----------
+
+app.post('/organizador/auth/login', rota((req) =>
+  tx((c) => O.login(c, { email: req.body.email, senha: req.body.senha }))
+));
+
+app.post('/organizador/auth/2fa', rota((req) =>
+  tx((c) => O.verificar2fa(c, {
+    email: req.body.email,
+    codigo: req.body.codigo,
+    dispositivo: req.body.dispositivo,
+  }))
+));
+
+app.post('/organizador/auth/refresh', rota((req) =>
+  tx((c) => O.renovar(c, req.body.refresh_token))
+));
+
+app.post('/organizador/auth/logout', rota((req) =>
+  tx((c) => O.revogar(c, req.body.refresh_token))
+));
+
+app.get('/organizador/eu', O.autenticarOrganizador, rota((req) =>
+  tx((c) => O.eu(c, req.organizador.id))
+));
+
+// ---------- Dispositivos ----------
+
+app.post('/organizadores/eventos/:eventoId/dispositivos', O.autenticarOrganizador, rota((req) =>
+  tx((c) => D.criarDispositivo(c, {
+    organizadorId: req.organizador.id,
+    eventoId: req.params.eventoId,
+    tipo: req.body.tipo,
+    nome: req.body.nome,
+    sellerId: req.body.seller_id,
+  }))
+));
+
+app.get('/organizadores/eventos/:eventoId/dispositivos', O.autenticarOrganizador, rota((req) =>
+  tx((c) => D.listarDispositivos(c, {
+    organizadorId: req.organizador.id,
+    eventoId: req.params.eventoId,
+  }))
+));
+
+app.post('/organizadores/dispositivos/:id/revogar', O.autenticarOrganizador, rota((req) =>
+  tx((c) => D.revogarDispositivo(c, {
+    organizadorId: req.organizador.id,
+    deviceId: req.params.id,
+  }))
+));
+
+app.post('/dispositivos/parear', rota((req) =>
+  tx((c) => D.parearDispositivo(c, {
+    codigo: req.body.codigo,
+    chavePublica: req.body.chave_publica,
+  }))
+));
+
 // ---------- Compra de bilhete ---------- cria pedido pendente. O pagamento é iniciado no prestador
 // e só o webhook torna o pedido pago.
 app.post('/eventos/:eventoId/pedidos', rota((req) =>
@@ -163,34 +224,60 @@ app.get('/qr/chave-publica', (_req, res) => {
   res.type('text/plain').send(Q.chavePublicaPem());
 });
 
-// Vendas e entradas recebem o token do QR, nunca o id da carteira.
-app.post('/vendas', rota((req) => {
+// Vendas e entradas recebem o token do QR, nunca o id da carteira. O
+// dispositivo autenticado fixa o evento, o vendedor e o ponto da venda.
+app.post('/vendas', D.autenticarDispositivo, rota((req) => {
   const p = Q.verificar(req.body.qr);
+  if (req.dispositivo.event_id !== p.e) throw httpErr(403, 'dispositivo_de_outro_evento');
+  if (req.dispositivo.tipo !== 'vendedor') throw httpErr(403, 'dispositivo_nao_pode_vender');
   return tx(async (c) => {
     await Q.resolverPayload(c, p);
     return L.venda(c, {
       walletId: p.w,
       valor: Number(req.body.valor),
-      sellerId: req.body.seller_id,
-      deviceId: req.body.device_id,
+      sellerId: req.dispositivo.seller_id,
+      deviceId: req.dispositivo.id,
       clientTxId: req.body.client_tx_id,
     });
   });
 }));
 
-app.post('/transacoes/:id/estorno', rota((req) =>
-  tx((c) => L.estornar(c, {
-    transacaoId: req.params.id,
-    sellerId: req.body.seller_id,
-    deviceId: req.body.device_id,
-  }))
+app.post('/transacoes/:id/estorno', D.autenticarAtor, rota((req) =>
+  tx(async (c) => {
+    const t = (await c.query(
+      `SELECT w.event_id, e.organizer_id
+         FROM transactions t
+         JOIN wallets w ON w.id = t.wallet_id
+         JOIN events e ON e.id = w.event_id
+        WHERE t.id=$1`,
+      [req.params.id]
+    )).rows[0];
+    if (!t) throw httpErr(404, 'transaccao_inexistente');
+
+    if (req.ator.tipo === 'organizador') {
+      if (t.organizer_id !== req.ator.id) throw httpErr(403, 'evento_sem_acesso');
+    } else {
+      if (req.dispositivo.tipo !== 'vendedor')
+        throw httpErr(403, 'dispositivo_nao_pode_estornar');
+      if (t.event_id !== req.dispositivo.event_id)
+        throw httpErr(403, 'dispositivo_de_outro_evento');
+    }
+
+    return L.estornar(c, {
+      transacaoId: req.params.id,
+      sellerId: req.dispositivo ? req.dispositivo.seller_id : null,
+      deviceId: req.dispositivo ? req.dispositivo.id : null,
+    });
+  })
 ));
 
-app.post('/entradas', rota((req) => {
+app.post('/entradas', D.autenticarDispositivo, rota((req) => {
   const p = Q.verificar(req.body.qr);
+  if (req.dispositivo.event_id !== p.e) throw httpErr(403, 'dispositivo_de_outro_evento');
+  if (req.dispositivo.tipo !== 'porta') throw httpErr(403, 'dispositivo_nao_pode_admitir');
   return tx(async (c) => {
     await Q.resolverPayload(c, p);
-    return L.admitir(c, { walletId: p.w, deviceId: req.body.device_id });
+    return L.admitir(c, { walletId: p.w, deviceId: req.dispositivo.id });
   });
 }));
 
