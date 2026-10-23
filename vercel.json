@@ -1,0 +1,4 @@
+{
+  "buildCommand": "cd acessoqr-frontend && npm install && npm run build",
+  "outputDirectory": "acessoqr-frontend/dist"
+}
