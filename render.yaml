@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: acessoqr-api
+    env: node
+    rootDir: acessoqr-api/pacote
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/server.js
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+
+  - type: web
+    name: acessoqr-frontend
+    env: static
+    rootDir: acessoqr-frontend
+    buildCommand: npm install; npm run build
+    staticPublishPath: dist
