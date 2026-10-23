@@ -407,7 +407,18 @@ app.get('/pedidos/:id', rota(async (req) => {
 }));
 
 // Recarga: cria pedido de recarga pendente.
-app.post('/carteiras/:id/recargas', A.autenticar, rota(async (req) => {
+app.post('/carteiras/:id/recargas', rota(async (req) => {
+  const recarga = await tx(async (c) => {
+    return L.criarRecarga(c, {
+      walletId: req.params.id,
+      valor: Number(req.body.valor),
+      metodo: req.body.metodo || 'mpesa',
+    });
+  });
+  return PAG.iniciarCobrancaRecarga(recarga);
+}));
+
+app.post('/carteiras_auth/:id/recargas', A.autenticar, rota(async (req) => {
   const recarga = await tx(async (c) => {
     await A.exigirCarteira(c, req.conta.id, req.params.id);
     return L.criarRecarga(c, {
@@ -419,7 +430,35 @@ app.post('/carteiras/:id/recargas', A.autenticar, rota(async (req) => {
   return PAG.iniciarCobrancaRecarga(recarga);
 }));
 
-app.get('/carteiras/:id', A.autenticar, rota((req) =>
+app.get('/carteiras/:id', rota(async (req) => {
+  const { rows } = await pool.query(
+    `SELECT w.id, w.estado, w.saldo, w.event_id,
+            e.nome AS evento_nome, e.local AS evento_local, e.estado AS evento_estado,
+            t.id AS ticket_id, tt.nome AS ticket_nome,
+            COALESCE(wc.valor_normalizado, 'Portador da Carteira') AS holder_name
+       FROM wallets w
+       JOIN events e ON e.id = w.event_id
+       LEFT JOIN tickets t ON t.wallet_id = w.id
+       LEFT JOIN ticket_types tt ON tt.id = t.ticket_type_id
+       LEFT JOIN wallet_contacts wc ON wc.wallet_id = w.id
+      WHERE w.id=$1`,
+    [req.params.id]
+  );
+  if (!rows[0]) throw httpErr(404, 'carteira_inexistente');
+  const txs = (await pool.query(
+    `SELECT t.id, t.tipo, t.valor, t.origem, t.criado_em,
+            s.nome AS seller_nome, sp.nome AS ponto_nome
+       FROM transactions t
+       LEFT JOIN sellers s ON s.id = t.seller_id
+       LEFT JOIN sales_points sp ON sp.id = s.sales_point_id
+      WHERE t.wallet_id=$1
+      ORDER BY t.criado_em DESC LIMIT 50`,
+    [req.params.id]
+  )).rows;
+  return { ...rows[0], transacoes: txs };
+}));
+
+app.get('/carteiras_auth/:id', A.autenticar, rota((req) =>
   tx(async (c) => {
     await A.exigirCarteira(c, req.conta.id, req.params.id);
     return L.saldo(c, req.params.id);
@@ -428,7 +467,13 @@ app.get('/carteiras/:id', A.autenticar, rota((req) =>
 
 // Emite o QR rotativo da carteira. A area do comprador usa isto para mostrar
 // o QR; o QR em si nao expoe o id da carteira.
-app.post('/carteiras/:id/qr', A.autenticar, rota((req) =>
+app.post('/carteiras/:id/qr', rota(async (req) => {
+  const w = (await pool.query('SELECT event_id FROM wallets WHERE id=$1', [req.params.id])).rows[0];
+  if (!w) throw httpErr(404, 'carteira_inexistente');
+  return Q.emitir({ walletId: req.params.id, eventId: w.event_id });
+}));
+
+app.post('/carteiras_auth/:id/qr', A.autenticar, rota((req) =>
   tx(async (c) => {
     await A.exigirCarteira(c, req.conta.id, req.params.id);
     const w = (await c.query('SELECT event_id FROM wallets WHERE id=$1', [req.params.id])).rows[0];

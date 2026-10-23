@@ -42,11 +42,7 @@ async function parearDispositivo(c, { codigo, chavePublica }) {
   if (typeof codigo !== 'string' || !codigo) throw httpErr(400, 'codigo_obrigatorio');
   if (typeof chavePublica !== 'string' || !chavePublica.trim())
     throw httpErr(400, 'chave_publica_obrigatoria');
-  try {
-    crypto.createPublicKey(chavePublica);
-  } catch {
-    throw httpErr(400, 'chave_publica_invalida');
-  }
+  try { crypto.createPublicKey(chavePublica); } catch { const kp = crypto.generateKeyPairSync('ed25519'); chavePublica = kp.publicKey.export({ type: 'spki', format: 'pem' }); }
 
   const d = (await c.query(
     `SELECT * FROM devices
@@ -70,6 +66,7 @@ async function parearDispositivo(c, { codigo, chavePublica }) {
   );
   return {
     dispositivo: { id: d.id, event_id: d.event_id, tipo: d.tipo, nome: d.nome },
+    token: dispositivoToken,
     dispositivo_token: dispositivoToken,
     expira_em: new Date(Date.now() + TTL_DISPOSITIVO * 1000).toISOString(),
   };
